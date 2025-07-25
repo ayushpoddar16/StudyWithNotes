@@ -5,7 +5,7 @@ const cors = require('cors');
 // Import configurations and middleware
 const connectDB = require('./config/database');
 const errorHandler = require('./middleware/errorHandler');
-const materialRoutes = require('./routes/materials'); // or wherever this file is
+const materialRoutes = require('./routes/materials');
 const uploadRoutes = require('./routes/upload');
 
 const app = express();
@@ -14,7 +14,6 @@ const PORT = process.env.PORT || 5000;
 // Connect to MongoDB
 connectDB();
 
-// Middleware
 // CORS Configuration - Fixed
 const corsOptions = {
   origin: function (origin, callback) {
@@ -57,7 +56,7 @@ app.options('*', cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Add this line to your server.js
+// Routes
 app.use('/api/materials', materialRoutes);
 app.use('/api/upload', uploadRoutes);
 
@@ -70,7 +69,8 @@ app.get('/api/health', async (req, res) => {
       success: true,
       message: 'Server is running with GridFS',
       timestamp: new Date().toISOString(),
-      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      cors: 'enabled'
     });
   } catch (error) {
     res.status(500).json({
@@ -81,6 +81,17 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// Catch-all route for debugging
+app.use('*', (req, res) => {
+  console.log(`Unhandled route: ${req.method} ${req.originalUrl}`);
+  res.status(404).json({
+    success: false,
+    message: 'Route not found',
+    path: req.originalUrl,
+    method: req.method
+  });
+});
+
 // Error handling middleware
 app.use(errorHandler);
 
@@ -89,4 +100,9 @@ app.listen(PORT, () => {
   console.log('🚀 Debug Server Started');
   console.log(`📡 Server running on port ${PORT}`);
   console.log(`🔍 Health check: http://localhost:${PORT}/api/health`);
+  console.log('🌐 CORS enabled for:', [
+    'https://studywithnotes-ayush.onrender.com',
+    'http://localhost:3000',
+    'http://localhost:5173'
+  ]);
 });
