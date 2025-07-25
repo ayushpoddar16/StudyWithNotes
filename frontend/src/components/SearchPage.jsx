@@ -21,13 +21,15 @@ const SearchPage = () => {
   // API Base URL - matches your backend
   const API_BASE_URL = 'http://localhost:5000/api';
 
-  // Fetch materials from backend using the correct endpoints
+  // Updated fetchMaterials function with proper sort parameters
   const fetchMaterials = async (page = 1) => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
         page: page.toString(),
-        limit: pagination.limit.toString()
+        limit: pagination.limit.toString(),
+        sortBy: sortBy,
+        sortOrder: sortOrder
       });
 
       if (searchTerm.trim()) {
@@ -40,8 +42,10 @@ const SearchPage = () => {
         params.append('subject', filterSubject);
       }
 
-      // Use the existing upload route that has PDF listing functionality
-      const response = await fetch(`${API_BASE_URL}/upload/pdfs?${params}`);
+      console.log('Fetching with params:', params.toString()); // Debug log
+
+      // Use the materials endpoint for better functionality
+      const response = await fetch(`${API_BASE_URL}/materials/search?${params}`);
       
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -77,43 +81,15 @@ const SearchPage = () => {
     }
   };
 
-  // Also fetch all materials (including links) if you have a general materials endpoint
-  const fetchAllMaterials = async (page = 1) => {
-    setLoading(true);
-    try {
-      // Since you might not have a materials endpoint yet, let's create a workaround
-      // This would need a new endpoint in your backend
-      const response = await fetch(`${API_BASE_URL}/materials/search?page=${page}&limit=${pagination.limit}&search=${searchTerm}&type=${filterType}&subject=${filterSubject}`);
-      
-      if (response.ok) {
-        const data = await response.json();
-        if (data.success) {
-          setMaterials(data.data || []);
-          setPagination(data.pagination || { page: 1, pages: 1, total: 0, limit: 12 });
-          const uniqueSubjects = [...new Set(data.data?.map(item => item.subject).filter(Boolean) || [])];
-          setSubjects(uniqueSubjects);
-          return;
-        }
-      }
-      
-      // Fallback to PDFs only if materials endpoint doesn't exist
-      await fetchMaterials(page);
-      
-    } catch (error) {
-      console.error('Error fetching all materials, falling back to PDFs only:', error);
-      await fetchMaterials(page);
-    }
-  };
-
   // Initial load
   useEffect(() => {
-    fetchAllMaterials();
+    fetchMaterials();
   }, []);
 
-  // Refetch when filters change
+  // Refetch when filters change - with proper dependency array
   useEffect(() => {
     const timeoutId = setTimeout(() => {
-      fetchAllMaterials(1); // Reset to first page when filters change
+      fetchMaterials(1); // Reset to first page when filters change
     }, 300); // Debounce search
 
     return () => clearTimeout(timeoutId);
@@ -239,7 +215,7 @@ const SearchPage = () => {
 
   const handlePageChange = (newPage) => {
     if (newPage >= 1 && newPage <= pagination.pages) {
-      fetchAllMaterials(newPage);
+      fetchMaterials(newPage);
     }
   };
 
@@ -268,6 +244,14 @@ const SearchPage = () => {
       return `${sizeInMB} MB`;
     }
     return '';
+  };
+
+  // Fixed sort handler
+  const handleSortChange = (e) => {
+    const [field, order] = e.target.value.split('-');
+    console.log('Sort changed to:', field, order); // Debug log
+    setSortBy(field);
+    setSortOrder(order);
   };
 
   if (loading && materials.length === 0) {
@@ -341,11 +325,7 @@ const SearchPage = () => {
 
               <select
                 value={`${sortBy}-${sortOrder}`}
-                onChange={(e) => {
-                  const [field, order] = e.target.value.split('-');
-                  setSortBy(field);
-                  setSortOrder(order);
-                }}
+                onChange={handleSortChange}
                 className="px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="uploadedAt-desc">Newest First</option>
@@ -436,22 +416,6 @@ const SearchPage = () => {
                         </div>
                       )}
 
-                      {/* File Size for PDFs */}
-                      {material.type === 'pdf' && getFileSize(material) && (
-                        <p className="text-xs text-gray-500 mb-2">Size: {getFileSize(material)}</p>
-                      )}
-
-                      {/* GridFS ID for debugging */}
-                      {material.gridfsId && (
-                        <p className="text-xs text-gray-400 mb-2">ID: {material.gridfsId}</p>
-                      )}
-
-                      {/* Access Count */}
-                      {material.accessCount > 0 && (
-                        <p className="text-xs text-gray-500 mb-3">
-                          {material.type === 'pdf' ? 'Views' : 'Clicks'}: {material.accessCount}
-                        </p>
-                      )}
 
                       {/* Action Buttons */}
                       <div className="mt-4 space-y-2">

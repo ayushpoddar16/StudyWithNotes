@@ -7,7 +7,7 @@ import {
   ArrowRight,
   BookOpen,
 } from "lucide-react";
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from "react-router-dom";
 const UploadPage = () => {
   const [activeTab, setActiveTab] = useState("links");
   const [links, setLinks] = useState([
@@ -96,87 +96,96 @@ const UploadPage = () => {
   };
 
   const handleSubmit = async () => {
-  setUploading(true);
+    setUploading(true);
 
-  try {
-    // Validate links before submission
-    const validLinks = links.filter(link => link.url.trim());
-    const invalidLinks = validLinks.filter(link => {
-      const subject = link.subject === 'custom' ? link.customSubject : link.subject;
-      return !subject || subject.trim() === '';
-    });
+    try {
+      // Validate links before submission
+      const validLinks = links.filter((link) => link.url.trim());
+      const invalidLinks = validLinks.filter((link) => {
+        const subject =
+          link.subject === "custom" ? link.customSubject : link.subject;
+        return !subject || subject.trim() === "";
+      });
 
-    if (invalidLinks.length > 0) {
-      alert('Please select a subject for all links before uploading.');
+      if (invalidLinks.length > 0) {
+        alert("Please select a subject for all links before uploading.");
+        setUploading(false);
+        return;
+      }
+
+      // Validate PDFs before submission
+      const invalidPdfs = pdfs.filter((pdf) => {
+        const subject =
+          pdf.subject === "custom" ? pdf.customSubject : pdf.subject;
+        return !subject || subject.trim() === "";
+      });
+
+      if (invalidPdfs.length > 0) {
+        alert("Please select a subject for all PDF files before uploading.");
+        setUploading(false);
+        return;
+      }
+
+      // Check if there's anything to upload
+      if (validLinks.length === 0 && pdfs.length === 0) {
+        alert("Please add at least one link or PDF file to upload.");
+        setUploading(false);
+        return;
+      }
+
+      const formData = new FormData();
+
+      // Add links data (only valid links with subjects)
+      if (validLinks.length > 0) {
+        formData.append("links", JSON.stringify(validLinks));
+      }
+
+      // Add PDF files with consistent field naming
+      pdfs.forEach((pdfData, index) => {
+        formData.append("pdfs", pdfData.file);
+        formData.append(
+          `pdf_${index}_title`,
+          pdfData.title || pdfData.file.name
+        );
+        formData.append(`pdf_${index}_subject`, pdfData.subject);
+        formData.append(
+          `pdf_${index}_customSubject`,
+          pdfData.customSubject || ""
+        );
+      });
+
+      // ✅ FIXED: Correct API endpoint
+      const response = await fetch("http://localhost:5000/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      // Check if response is HTML (404 page) instead of JSON
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error(
+          `Server returned ${response.status}: ${response.statusText}. Check if the API endpoint exists.`
+        );
+      }
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        alert(`Success! Uploaded ${result.data.length} materials.`);
+
+        // Reset form
+        setLinks([{ url: "", title: "", subject: "", customSubject: "" }]);
+        setPdfs([]);
+      } else {
+        throw new Error(result.message || result.error || "Upload failed");
+      }
+    } catch (error) {
+      console.error("Upload failed:", error);
+      alert(`Upload failed: ${error.message}`);
+    } finally {
       setUploading(false);
-      return;
     }
-
-    // Validate PDFs before submission
-    const invalidPdfs = pdfs.filter(pdf => {
-      const subject = pdf.subject === 'custom' ? pdf.customSubject : pdf.subject;
-      return !subject || subject.trim() === '';
-    });
-
-    if (invalidPdfs.length > 0) {
-      alert('Please select a subject for all PDF files before uploading.');
-      setUploading(false);
-      return;
-    }
-
-    // Check if there's anything to upload
-    if (validLinks.length === 0 && pdfs.length === 0) {
-      alert('Please add at least one link or PDF file to upload.');
-      setUploading(false);
-      return;
-    }
-
-    const formData = new FormData();
-
-    // Add links data (only valid links with subjects)
-    if (validLinks.length > 0) {
-      formData.append('links', JSON.stringify(validLinks));
-    }
-
-    // Add PDF files with consistent field naming
-    pdfs.forEach((pdfData, index) => {
-      formData.append('pdfs', pdfData.file);
-      formData.append(`pdf_${index}_title`, pdfData.title || pdfData.file.name);
-      formData.append(`pdf_${index}_subject`, pdfData.subject);
-      formData.append(`pdf_${index}_customSubject`, pdfData.customSubject || '');
-    });
-
-    // ✅ FIXED: Correct API endpoint
-    const response = await fetch('http://localhost:5000/api/upload/upload', {
-      method: 'POST',
-      body: formData
-    });
-
-    // Check if response is HTML (404 page) instead of JSON
-    const contentType = response.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      throw new Error(`Server returned ${response.status}: ${response.statusText}. Check if the API endpoint exists.`);
-    }
-
-    const result = await response.json();
-
-    if (response.ok && result.success) {
-      alert(`Success! Uploaded ${result.data.length} materials.`);
-      
-      // Reset form
-      setLinks([{ url: "", title: "", subject: "", customSubject: "" }]);
-      setPdfs([]);
-    } else {
-      throw new Error(result.message || result.error || 'Upload failed');
-    }
-
-  } catch (error) {
-    console.error("Upload failed:", error);
-    alert(`Upload failed: ${error.message}`);
-  } finally {
-    setUploading(false);
-  }
-};
+  };
 
   const goToSearchPage = () => {
     // In a real app with routing, you'd navigate here
