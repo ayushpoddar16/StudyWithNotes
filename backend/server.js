@@ -99,42 +99,26 @@ try {
 
 // CORS Configuration
 console.log("🌐 Setting up CORS...");
+// Simple CORS configuration that should work
 const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-
-    const allowedOrigins = [
-      "https://studywithnotes-ayush.onrender.com",
-      "http://localhost:3000",
-      "http://localhost:5173",
-      "http://localhost:3001",
-    ];
-
-    console.log("🌐 Request from origin:", origin);
-
-    if (allowedOrigins.includes(origin)) {
-      console.log("✅ Origin allowed:", origin);
-      callback(null, true);
-    } else {
-      console.log("❌ Origin blocked:", origin);
-      callback(new Error("Not allowed by CORS"));
-    }
-  },
+  origin: [
+    "https://studywithnotes-ayush.onrender.com",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:3001",
+  ],
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
   allowedHeaders: [
     "Origin",
-    "X-Requested-With",
+    "X-Requested-With", 
     "Content-Type",
     "Accept",
     "Authorization",
     "Cache-Control",
-    "Pragma",
-    "Content-Length",
-    "Accept-Encoding",
+    "Pragma"
   ],
-  exposedHeaders: ["Content-Length", "Content-Type"],
-  maxAge: 86400,
+  optionsSuccessStatus: 200
 };
 
 app.use(cors(corsOptions));
