@@ -1,34 +1,33 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Link, FileText, ExternalLink, Download, Filter, ArrowLeft, Calendar, Tag, BookOpen } from 'lucide-react';
+import { Search, Link, FileText, ExternalLink, Download, Filter, ArrowLeft, Calendar, Tag, BookOpen, Eye } from 'lucide-react';
 
 const SearchPage = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
   const [filterSubject, setFilterSubject] = useState('all');
-  const [sortBy, setSortBy] = useState('uploadDate');
+  const [sortBy, setSortBy] = useState('uploadedAt');
   const [sortOrder, setSortOrder] = useState('desc');
   const [materials, setMaterials] = useState([]);
   const [subjects, setSubjects] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [downloadingIds, setDownloadingIds] = useState(new Set());
   const [pagination, setPagination] = useState({
-    currentPage: 1,
-    totalPages: 1,
-    totalItems: 0,
-    itemsPerPage: 12
+    page: 1,
+    pages: 1,
+    total: 0,
+    limit: 12
   });
 
-  // API Base URL - adjust this to match your backend
-  const API_BASE_URL ='http://localhost:5000/api';
+  // API Base URL - matches your backend
+  const API_BASE_URL = 'http://localhost:5000/api';
 
-  // Fetch materials from backend
+  // Fetch materials from backend using the correct endpoints
   const fetchMaterials = async (page = 1) => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
         page: page.toString(),
-        limit: pagination.itemsPerPage.toString(),
-        sortBy,
-        sortOrder
+        limit: pagination.limit.toString()
       });
 
       if (searchTerm.trim()) {
@@ -41,13 +40,27 @@ const SearchPage = () => {
         params.append('subject', filterSubject);
       }
 
-      const response = await fetch(`${API_BASE_URL}/materials?${params}`);
+      // Use the existing upload route that has PDF listing functionality
+      const response = await fetch(`${API_BASE_URL}/upload/pdfs?${params}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response. Check if the API endpoint exists.');
+      }
+
       const data = await response.json();
 
       if (data.success) {
-        setMaterials(data.data);
-        setPagination(data.pagination);
-        setSubjects(data.subjects || []);
+        setMaterials(data.data || []);
+        setPagination(data.pagination || { page: 1, pages: 1, total: 0, limit: 12 });
+        
+        // Extract unique subjects from materials
+        const uniqueSubjects = [...new Set(data.data?.map(item => item.subject).filter(Boolean) || [])];
+        setSubjects(uniqueSubjects);
       } else {
         console.error('Failed to fetch materials:', data.message);
         setMaterials([]);
@@ -55,46 +68,154 @@ const SearchPage = () => {
     } catch (error) {
       console.error('Error fetching materials:', error);
       setMaterials([]);
+      // Show user-friendly error
+      if (error.message.includes('404')) {
+        console.error('API endpoint not found. Make sure your backend server is running and the routes are correct.');
+      }
     } finally {
       setLoading(false);
     }
   };
 
+  // Also fetch all materials (including links) if you have a general materials endpoint
+  const fetchAllMaterials = async (page = 1) => {
+    setLoading(true);
+    try {
+      // Since you might not have a materials endpoint yet, let's create a workaround
+      // This would need a new endpoint in your backend
+      const response = await fetch(`${API_BASE_URL}/materials/search?page=${page}&limit=${pagination.limit}&search=${searchTerm}&type=${filterType}&subject=${filterSubject}`);
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.success) {
+          setMaterials(data.data || []);
+          setPagination(data.pagination || { page: 1, pages: 1, total: 0, limit: 12 });
+          const uniqueSubjects = [...new Set(data.data?.map(item => item.subject).filter(Boolean) || [])];
+          setSubjects(uniqueSubjects);
+          return;
+        }
+      }
+      
+      // Fallback to PDFs only if materials endpoint doesn't exist
+      await fetchMaterials(page);
+      
+    } catch (error) {
+      console.error('Error fetching all materials, falling back to PDFs only:', error);
+      await fetchMaterials(page);
+    }
+  };
+
   // Initial load
   useEffect(() => {
-    fetchMaterials();
+    fetchAllMaterials();
   }, []);
 
   // Refetch when filters change
   useEffect(() => {
     const timeoutId = setTimeout(() => {
-      fetchMaterials(1); // Reset to first page when filters change
+      fetchAllMaterials(1); // Reset to first page when filters change
     }, 300); // Debounce search
 
     return () => clearTimeout(timeoutId);
   }, [searchTerm, filterType, filterSubject, sortBy, sortOrder]);
 
+  const handleViewPdf = (material) => {
+    if (material.type === 'pdf' && material.gridfsId) {
+      // Open PDF in new tab using the GridFS endpoint
+      const pdfUrl = `${API_BASE_URL}/upload/pdf/${material.gridfsId}`;
+      window.open(pdfUrl, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  // IMPROVED DOWNLOAD FUNCTION
   const handleDownload = async (material) => {
+    if (!material.gridfsId) {
+      alert('File ID not found. Cannot download.');
+      return;
+    }
+
+    const materialId = material._id || material.id;
+    setDownloadingIds(prev => new Set(prev).add(materialId));
+
     try {
-      const response = await fetch(`${API_BASE_URL}/materials/${material.id}/download`);
+      // Method 1: Using fetch with blob (more reliable)
+      const pdfUrl = `${API_BASE_URL}/upload/pdf/${material.gridfsId}`;
       
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = material.originalName || material.title;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-      } else {
-        const errorData = await response.json();
-        alert(`Download failed: ${errorData.message}`);
+      const response = await fetch(pdfUrl, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/pdf',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
+
+      // Check if response is actually a PDF
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/pdf')) {
+        throw new Error('Server did not return a PDF file');
+      }
+
+      // Convert response to blob
+      const blob = await response.blob();
+      
+      // Create object URL from blob
+      const blobUrl = window.URL.createObjectURL(blob);
+      
+      // Create download link
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      
+      // Set filename - try multiple sources
+      const filename = material.originalName || 
+                     material.filename || 
+                     material.title || 
+                     `document_${material.gridfsId}.pdf`;
+      
+      // Ensure filename has .pdf extension
+      link.download = filename.endsWith('.pdf') ? filename : `${filename}.pdf`;
+      
+      // Append to body, click, and remove
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      // Clean up the blob URL
+      setTimeout(() => {
+        window.URL.revokeObjectURL(blobUrl);
+      }, 100);
+      
+      console.log(`Successfully downloaded: ${link.download}`);
+      
     } catch (error) {
       console.error('Download error:', error);
-      alert('Download failed. Please try again.');
+      
+      // Fallback method: Direct link approach
+      try {
+        console.log('Trying fallback download method...');
+        const pdfUrl = `${API_BASE_URL}/upload/pdf/${material.gridfsId}?download=true`;
+        
+        const link = document.createElement('a');
+        link.href = pdfUrl;
+        link.download = material.originalName || material.filename || material.title || `document_${material.gridfsId}.pdf`;
+        link.target = '_blank';
+        
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        
+      } catch (fallbackError) {
+        console.error('Fallback download also failed:', fallbackError);
+        alert(`Download failed: ${error.message}\n\nPlease check:\n1. Your internet connection\n2. Server is running\n3. File exists on server`);
+      }
+    } finally {
+      setDownloadingIds(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(materialId);
+        return newSet;
+      });
     }
   };
 
@@ -108,6 +229,7 @@ const SearchPage = () => {
   };
 
   const formatDate = (dateString) => {
+    if (!dateString) return 'Unknown date';
     return new Date(dateString).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
@@ -116,12 +238,14 @@ const SearchPage = () => {
   };
 
   const handlePageChange = (newPage) => {
-    if (newPage >= 1 && newPage <= pagination.totalPages) {
-      fetchMaterials(newPage);
+    if (newPage >= 1 && newPage <= pagination.pages) {
+      fetchAllMaterials(newPage);
     }
   };
 
   const getSubjectDisplayName = (subject) => {
+    if (!subject) return 'Unknown Subject';
+    
     const subjectMap = {
       mathematics: 'Mathematics',
       physics: 'Physics',
@@ -134,7 +258,16 @@ const SearchPage = () => {
       history: 'History',
       languages: 'Languages'
     };
-    return subjectMap[subject] || subject;
+    return subjectMap[subject] || subject.charAt(0).toUpperCase() + subject.slice(1);
+  };
+
+  const getFileSize = (material) => {
+    if (material.size) return material.size;
+    if (material.file?.size) {
+      const sizeInMB = (material.file.size / 1024 / 1024).toFixed(2);
+      return `${sizeInMB} MB`;
+    }
+    return '';
   };
 
   if (loading && materials.length === 0) {
@@ -215,8 +348,8 @@ const SearchPage = () => {
                 }}
                 className="px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
-                <option value="uploadDate-desc">Newest First</option>
-                <option value="uploadDate-asc">Oldest First</option>
+                <option value="uploadedAt-desc">Newest First</option>
+                <option value="uploadedAt-asc">Oldest First</option>
                 <option value="title-asc">Title A-Z</option>
                 <option value="title-desc">Title Z-A</option>
               </select>
@@ -226,11 +359,11 @@ const SearchPage = () => {
           {/* Results Count */}
           <div className="flex justify-between items-center text-sm text-gray-600">
             <div>
-              Showing {materials.length} of {pagination.totalItems} materials
+              Showing {materials.length} of {pagination.total} materials
               {loading && <span className="ml-2 text-blue-500">Loading...</span>}
             </div>
             <div>
-              Page {pagination.currentPage} of {pagination.totalPages}
+              Page {pagination.page} of {pagination.pages}
             </div>
           </div>
         </div>
@@ -251,104 +384,145 @@ const SearchPage = () => {
         ) : (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-              {materials.map((material) => (
-                <div key={material.id} className="bg-white rounded-lg shadow-lg hover:shadow-xl transition-shadow duration-300">
-                  {/* Card Header */}
-                  <div className="p-4 border-b border-gray-200">
-                    <div className="flex items-start justify-between">
-                      <div className="flex items-center">
-                        {material.type === 'link' ? (
-                          <Link className="w-5 h-5 text-blue-500 mr-2 flex-shrink-0" />
-                        ) : (
-                          <FileText className="w-5 h-5 text-red-500 mr-2 flex-shrink-0" />
-                        )}
-                        <span className={`px-2 py-1 text-xs font-medium rounded-full ${
-                          material.type === 'link' 
-                            ? 'bg-blue-100 text-blue-800'
-                            : 'bg-red-100 text-red-800'
-                        }`}>
-                          {material.type.toUpperCase()}
-                        </span>
-                      </div>
-                      <div className="flex items-center text-xs text-gray-500">
-                        <Calendar className="w-3 h-3 mr-1" />
-                        {formatDate(material.uploadDate || material.createdAt)}
+              {materials.map((material) => {
+                const materialId = material._id || material.id;
+                const isDownloading = downloadingIds.has(materialId);
+                
+                return (
+                  <div key={materialId} className="bg-white rounded-lg shadow-lg hover:shadow-xl transition-shadow duration-300">
+                    {/* Card Header */}
+                    <div className="p-4 border-b border-gray-200">
+                      <div className="flex items-start justify-between">
+                        <div className="flex items-center">
+                          {material.type === 'link' ? (
+                            <Link className="w-5 h-5 text-blue-500 mr-2 flex-shrink-0" />
+                          ) : (
+                            <FileText className="w-5 h-5 text-red-500 mr-2 flex-shrink-0" />
+                          )}
+                          <span className={`px-2 py-1 text-xs font-medium rounded-full ${
+                            material.type === 'link' 
+                              ? 'bg-blue-100 text-blue-800'
+                              : 'bg-red-100 text-red-800'
+                          }`}>
+                            {material.type?.toUpperCase() || 'PDF'}
+                          </span>
+                        </div>
+                        <div className="flex items-center text-xs text-gray-500">
+                          <Calendar className="w-3 h-3 mr-1" />
+                          {formatDate(material.uploadedAt || material.createdAt)}
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  {/* Card Content */}
-                  <div className="p-4">
-                    <h3 className="font-semibold text-gray-800 mb-2 line-clamp-2">
-                      {material.title}
-                    </h3>
-                    
-                    {material.description && (
-                      <p className="text-gray-600 text-sm mb-3 line-clamp-3">
-                        {material.description}
-                      </p>
-                    )}
-
-                    {/* Subject */}
-                    {material.subject && (
-                      <div className="flex items-center mb-3">
-                        <BookOpen className="w-4 h-4 text-purple-500 mr-1" />
-                        <span className="text-sm text-purple-700 bg-purple-50 px-2 py-1 rounded">
-                          {getSubjectDisplayName(material.subject)}
-                        </span>
-                      </div>
-                    )}
-
-                    {material.type === 'pdf' && material.downloadCount > 0 && (
-                      <p className="text-xs text-gray-500 mb-3">Downloads: {material.downloadCount}</p>
-                    )}
-
-                    {/* Action Button */}
-                    <div className="mt-4">
-                      {material.type === 'link' ? (
-                        <button
-                          onClick={() => handleOpenLink(material.url)}
-                          className="w-full flex items-center justify-center px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
-                        >
-                          <ExternalLink className="w-4 h-4 mr-2" />
-                          Open Link
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleDownload(material)}
-                          className="w-full flex items-center justify-center px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
-                        >
-                          <Download className="w-4 h-4 mr-2" />
-                          Download PDF
-                        </button>
+                    {/* Card Content */}
+                    <div className="p-4">
+                      <h3 className="font-semibold text-gray-800 mb-2 line-clamp-2">
+                        {material.title || material.filename || 'Untitled'}
+                      </h3>
+                      
+                      {material.description && (
+                        <p className="text-gray-600 text-sm mb-3 line-clamp-3">
+                          {material.description}
+                        </p>
                       )}
+
+                      {/* Subject */}
+                      {material.subject && (
+                        <div className="flex items-center mb-3">
+                          <BookOpen className="w-4 h-4 text-purple-500 mr-1" />
+                          <span className="text-sm text-purple-700 bg-purple-50 px-2 py-1 rounded">
+                            {getSubjectDisplayName(material.subject)}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* File Size for PDFs */}
+                      {material.type === 'pdf' && getFileSize(material) && (
+                        <p className="text-xs text-gray-500 mb-2">Size: {getFileSize(material)}</p>
+                      )}
+
+                      {/* GridFS ID for debugging */}
+                      {material.gridfsId && (
+                        <p className="text-xs text-gray-400 mb-2">ID: {material.gridfsId}</p>
+                      )}
+
+                      {/* Access Count */}
+                      {material.accessCount > 0 && (
+                        <p className="text-xs text-gray-500 mb-3">
+                          {material.type === 'pdf' ? 'Views' : 'Clicks'}: {material.accessCount}
+                        </p>
+                      )}
+
+                      {/* Action Buttons */}
+                      <div className="mt-4 space-y-2">
+                        {material.type === 'link' ? (
+                          <button
+                            onClick={() => handleOpenLink(material.url)}
+                            className="w-full flex items-center justify-center px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                          >
+                            <ExternalLink className="w-4 h-4 mr-2" />
+                            Open Link
+                          </button>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => handleViewPdf(material)}
+                              className="w-full flex items-center justify-center px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                            >
+                              <Eye className="w-4 h-4 mr-2" />
+                              View PDF
+                            </button>
+                            <button
+                              onClick={() => handleDownload(material)}
+                              disabled={isDownloading}
+                              className={`w-full flex items-center justify-center px-4 py-2 rounded-lg transition-colors ${
+                                isDownloading
+                                  ? 'bg-gray-400 text-white cursor-not-allowed'
+                                  : 'bg-green-500 text-white hover:bg-green-600'
+                              }`}
+                            >
+                              {isDownloading ? (
+                                <>
+                                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                                  Downloading...
+                                </>
+                              ) : (
+                                <>
+                                  <Download className="w-4 h-4 mr-2" />
+                                  Download PDF
+                                </>
+                              )}
+                            </button>
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* Pagination */}
-            {pagination.totalPages > 1 && (
+            {pagination.pages > 1 && (
               <div className="flex justify-center items-center space-x-2 bg-white rounded-lg shadow-lg p-4">
                 <button
-                  onClick={() => handlePageChange(pagination.currentPage - 1)}
-                  disabled={pagination.currentPage === 1}
+                  onClick={() => handlePageChange(pagination.page - 1)}
+                  disabled={pagination.page === 1}
                   className="px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Previous
                 </button>
                 
-                {[...Array(Math.min(5, pagination.totalPages))].map((_, index) => {
-                  const pageNum = Math.max(1, pagination.currentPage - 2) + index;
-                  if (pageNum > pagination.totalPages) return null;
+                {[...Array(Math.min(5, pagination.pages))].map((_, index) => {
+                  const pageNum = Math.max(1, pagination.page - 2) + index;
+                  if (pageNum > pagination.pages) return null;
                   
                   return (
                     <button
                       key={pageNum}
                       onClick={() => handlePageChange(pageNum)}
                       className={`px-3 py-2 text-sm rounded ${
-                        pageNum === pagination.currentPage
+                        pageNum === pagination.page
                           ? 'bg-blue-500 text-white'
                           : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                       }`}
@@ -359,12 +533,13 @@ const SearchPage = () => {
                 })}
                 
                 <button
-                  onClick={() => handlePageChange(pagination.currentPage + 1)}
-                  disabled={pagination.currentPage === pagination.totalPages}
+                  onClick={() => handlePageChange(pagination.page + 1)}
+                  disabled={pagination.page === pagination.pages}
                   className="px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   Next
                 </button>
+                
               </div>
             )}
           </>

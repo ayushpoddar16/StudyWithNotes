@@ -1,31 +1,37 @@
+// routes/upload.js (Fixed ObjectId usage)
 const express = require('express');
 const router = express.Router();
-const upload = require('../middleware/upload');
+const upload = require('../middleware/gridfsUpload');
 const Material = require('../models/Material');
-const path = require('path');
-const fs = require('fs');
+const { getGfsBucket } = require('../config/gridfs');
 const { formatFileSize } = require('../utils/fileHelpers');
+const { extractTagsFromDescription, extractTagsFromFilename } = require('../utils/tagExtractor');
+const { Readable } = require('stream');
+const mongoose = require('mongoose');
 
-// Upload endpoint for both links and PDFs
+// Upload endpoint with GridFS - No local file storage
 router.post('/upload', upload.array('pdfs'), async (req, res) => {
-  const uploadedFiles = []; // Track uploaded files for cleanup on error
-  
   try {
     const { links } = req.body;
     const uploadedMaterials = [];
 
-    // Process links
+    // Process links (unchanged)
     if (links) {
       const linksData = JSON.parse(links);
       
       for (const linkData of linksData) {
         if (linkData.url && linkData.url.trim()) {
-          // Validate subject for links
           const finalSubject = linkData.subject === 'custom' ? linkData.customSubject : linkData.subject;
           
           if (!finalSubject || finalSubject.trim() === '') {
             throw new Error(`Subject is required for link: ${linkData.url}`);
           }
+
+          // Extract tags from title/description
+          const tags = [
+            ...extractTagsFromDescription(linkData.title),
+            ...extractTagsFromDescription(linkData.description)
+          ];
 
           const material = new Material({
             type: 'link',
@@ -33,8 +39,9 @@ router.post('/upload', upload.array('pdfs'), async (req, res) => {
             url: linkData.url,
             subject: finalSubject.trim(),
             customSubject: linkData.subject === 'custom' ? linkData.customSubject : undefined,
-            description: linkData.title || 'Link material',
-            filePath: linkData.url // For links, use URL as filePath
+            description: linkData.description || linkData.title || 'Link material',
+            tags: [...new Set(tags)], // Remove duplicates
+            filePath: linkData.url
           });
 
           const savedMaterial = await material.save();
@@ -43,60 +50,85 @@ router.post('/upload', upload.array('pdfs'), async (req, res) => {
       }
     }
 
-    // Process PDF files
+    // Process PDF files with GridFS - Store directly in MongoDB
     if (req.files && req.files.length > 0) {
+      const gfsBucket = getGfsBucket();
+
       for (let i = 0; i < req.files.length; i++) {
         const file = req.files[i];
-        uploadedFiles.push(file.path); // Track file for potential cleanup
         
-        // Fixed field name matching - use consistent naming
         const title = req.body[`pdf_${i}_title`] || file.originalname;
         const subject = req.body[`pdf_${i}_subject`];
         const customSubject = req.body[`pdf_${i}_customSubject`];
+        const description = req.body[`pdf_${i}_description`] || title;
 
-        // Validate subject for PDFs
         const finalSubject = subject === 'custom' ? customSubject : subject;
         
         if (!finalSubject || finalSubject.trim() === '') {
           throw new Error(`Subject is required for PDF: ${file.originalname}`);
         }
 
-        // Create material document
+        // Extract tags from filename and description
+        const tags = [
+          ...extractTagsFromFilename(file.originalname),
+          ...extractTagsFromDescription(description),
+          ...extractTagsFromDescription(title)
+        ];
+
+        // Upload file to GridFS - Direct MongoDB storage
+        const uploadStream = gfsBucket.openUploadStream(file.originalname, {
+          metadata: {
+            originalName: file.originalname,
+            mimeType: file.mimetype,
+            uploadDate: new Date(),
+            subject: finalSubject.trim(),
+            title: title,
+            description: description,
+            tags: [...new Set(tags)] // Remove duplicates
+          }
+        });
+
+        // Convert buffer to readable stream and pipe to GridFS
+        const readableStream = new Readable();
+        readableStream.push(file.buffer);
+        readableStream.push(null);
+
+        // Promise to handle the upload completion
+        const gridFSUpload = new Promise((resolve, reject) => {
+          uploadStream.on('error', reject);
+          uploadStream.on('finish', resolve);
+        });
+
+        readableStream.pipe(uploadStream);
+        await gridFSUpload;
+
+        // Create material document with GridFS file ID
         const material = new Material({
           type: 'pdf',
           title: title,
-          filename: file.filename,
-          filePath: file.path, // Use the actual file path instead of empty string
+          filename: file.originalname,
+          filePath: uploadStream.id.toString(), // Store GridFS ObjectId as string
+          gridfsId: uploadStream.id, // Store actual ObjectId for GridFS operations
           size: formatFileSize(file.size),
           originalName: file.originalname,
           mimeType: file.mimetype,
           subject: finalSubject.trim(),
           customSubject: subject === 'custom' ? customSubject : undefined,
-          description: title || 'PDF material'
+          description: description,
+          tags: [...new Set(tags)] // Store tags in Material document too
         });
 
         const savedMaterial = await material.save();
         uploadedMaterials.push(savedMaterial);
 
-        // Only delete the file AFTER successful database save if you don't want to keep files
-        // Comment out the deletion code below if you want to keep the files
-        try {
-          if (fs.existsSync(file.path)) {
-            fs.unlinkSync(file.path);
-            console.log(`✅ Deleted uploaded file: ${file.path}`);
-          }
-        } catch (deleteError) {
-          console.error(`❌ Error deleting file ${file.path}:`, deleteError);
-          // Continue execution even if file deletion fails
-        }
+        console.log(`✅ PDF uploaded to GridFS: ${file.originalname} (ID: ${uploadStream.id})`);
       }
     }
 
-    // Check if any materials were uploaded
     if (uploadedMaterials.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'No valid materials to upload. Please provide at least one link or PDF with required fields.'
+        message: 'No valid materials to upload.'
       });
     }
 
@@ -109,23 +141,242 @@ router.post('/upload', upload.array('pdfs'), async (req, res) => {
   } catch (error) {
     console.error('Upload error:', error);
     
-    // Clean up any uploaded files if there was an error
-    if (uploadedFiles.length > 0) {
-      uploadedFiles.forEach(filePath => {
-        try {
-          if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-            console.log(`🧹 Cleaned up file after error: ${filePath}`);
-          }
-        } catch (cleanupError) {
-          console.error(`❌ Error cleaning up file ${filePath}:`, cleanupError);
-        }
-      });
-    }
-    
     res.status(500).json({
       success: false,
       message: 'Failed to upload materials',
+      error: error.message
+    });
+  }
+});
+
+// Route to download/view PDF from GridFS
+router.get('/pdf/:id', async (req, res) => {
+  try {
+    const gfsBucket = getGfsBucket();
+    
+    // FIX: Proper ObjectId instantiation
+    let fileId;
+    try {
+      fileId = new mongoose.Types.ObjectId(req.params.id);
+    } catch (objectIdError) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid file ID format'
+      });
+    }
+
+    // Check if file exists in GridFS
+    const files = await gfsBucket.find({ _id: fileId }).toArray();
+    
+    if (!files || files.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'PDF not found'
+      });
+    }
+
+    const file = files[0];
+
+    // Update access count in Material document
+    try {
+      const material = await Material.findOne({ gridfsId: fileId });
+      if (material) {
+        await material.recordAccess();
+      }
+    } catch (accessError) {
+      console.error('Error updating access count:', accessError);
+      // Continue with file serving even if access count update fails
+    }
+
+    // Set appropriate headers for PDF
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${file.filename}"`,
+      'Content-Length': file.length,
+      'Cache-Control': 'public, max-age=31536000', // Cache for 1 year
+      'ETag': file._id.toString()
+    });
+
+    // Create download stream and pipe to response
+    const downloadStream = gfsBucket.openDownloadStream(fileId);
+    downloadStream.pipe(res);
+
+    downloadStream.on('error', (error) => {
+      console.error('Download error:', error);
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          message: 'Error downloading file'
+        });
+      }
+    });
+
+  } catch (error) {
+    console.error('PDF access error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to access PDF',
+      error: error.message
+    });
+  }
+});
+
+// Route to get PDF metadata
+router.get('/pdf/:id/info', async (req, res) => {
+  try {
+    const gfsBucket = getGfsBucket();
+    
+    // FIX: Proper ObjectId instantiation
+    let fileId;
+    try {
+      fileId = new mongoose.Types.ObjectId(req.params.id);
+    } catch (objectIdError) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid file ID format'
+      });
+    }
+
+    const files = await gfsBucket.find({ _id: fileId }).toArray();
+    
+    if (!files || files.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'PDF not found'
+      });
+    }
+
+    const file = files[0];
+    
+    // Also get Material document info
+    const material = await Material.findOne({ gridfsId: fileId });
+    
+    res.json({
+      success: true,
+      data: {
+        id: file._id,
+        filename: file.filename,
+        size: formatFileSize(file.length),
+        uploadDate: file.uploadDate,
+        metadata: file.metadata,
+        material: material ? {
+          title: material.title,
+          subject: material.subject,
+          description: material.description,
+          tags: material.tags,
+          accessCount: material.accessCount,
+          lastAccessed: material.lastAccessed
+        } : null
+      }
+    });
+
+  } catch (error) {
+    console.error('PDF info error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get PDF info',
+      error: error.message
+    });
+  }
+});
+
+// Route to delete PDF from GridFS
+router.delete('/pdf/:id', async (req, res) => {
+  try {
+    const gfsBucket = getGfsBucket();
+    
+    // FIX: Proper ObjectId instantiation
+    let fileId;
+    try {
+      fileId = new mongoose.Types.ObjectId(req.params.id);
+    } catch (objectIdError) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid file ID format'
+      });
+    }
+
+    // Check if file exists before deletion
+    const files = await gfsBucket.find({ _id: fileId }).toArray();
+    if (!files || files.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'PDF not found'
+      });
+    }
+
+    // Delete from GridFS
+    await gfsBucket.delete(fileId);
+
+    // Also delete from Material collection
+    const deletedMaterial = await Material.findOneAndDelete({ gridfsId: fileId });
+
+    res.json({
+      success: true,
+      message: 'PDF deleted successfully',
+      deletedMaterial: deletedMaterial ? {
+        title: deletedMaterial.title,
+        filename: deletedMaterial.filename
+      } : null
+    });
+
+  } catch (error) {
+    console.error('PDF deletion error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete PDF',
+      error: error.message
+    });
+  }
+});
+
+// Route to get all PDFs with pagination and filtering
+router.get('/pdfs', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const subject = req.query.subject;
+    const search = req.query.search;
+
+    // Build query
+    let query = { type: 'pdf' };
+    
+    if (subject && subject !== 'all') {
+      query.subject = subject;
+    }
+    
+    if (search) {
+      query.$or = [
+        { title: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { tags: { $in: [new RegExp(search, 'i')] } }
+      ];
+    }
+
+    const materials = await Material.find(query)
+      .sort({ uploadedAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .exec();
+
+    const total = await Material.countDocuments(query);
+
+    res.json({
+      success: true,
+      data: materials,
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching PDFs:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch PDFs',
       error: error.message
     });
   }

@@ -1,18 +1,14 @@
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
 
 // Import configurations and middleware
 const connectDB = require('./config/database');
 const errorHandler = require('./middleware/errorHandler');
+const materialRoutes = require('./routes/materials'); // or wherever this file is
 
-// Import routes (we'll create these next)
-const materialRoutes = require('./routes/materials');
-const uploadRoutes = require('./routes/upload');
-const statsRoutes = require('./routes/stats');
+// Import GridFS configuration
+require('./config/gridfs');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -20,58 +16,75 @@ const PORT = process.env.PORT || 5000;
 // Connect to MongoDB
 connectDB();
 
-// Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, process.env.UPLOAD_DIR || 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-  console.log('📁 Created uploads directory');
-}
+console.log('📁 Using GridFS for file storage - no local uploads directory needed');
 
 // Middleware
 app.use(cors({
-  origin: process.env.ALLOWED_ORIGINS?.split(',') || 'http://localhost:3000'
+  origin: process.env.ALLOWED_ORIGINS?.split(',') || 'http://localhost:3000',
+  credentials: true
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
-// Serve static files from uploads directory
-app.use('/uploads', express.static(uploadsDir));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Add this before your app.use() calls
-console.log('materialRoutes type:', typeof materialRoutes);
-console.log('uploadRoutes type:', typeof uploadRoutes);
-console.log('statsRoutes type:', typeof statsRoutes);
+console.log('📡 Files will be served from GridFS via API endpoints');
 
-// Then comment out the routes one by one to identify the problematic one:
+// Test routes one by one - uncomment one at a time to find the problematic one
+
+console.log('🔍 Testing materialRoutes...');
+try {
+  const materialRoutes = require('./routes/materials');
+  console.log('✅ materialRoutes loaded successfully');
+  app.use('/api/materials', materialRoutes);
+} catch (error) {
+  console.error('❌ Error in materialRoutes:', error.message);
+}
+
+console.log('🔍 Testing uploadRoutes...');
+try {
+  const uploadRoutes = require('./routes/upload');
+  console.log('✅ uploadRoutes loaded successfully');
+  app.use('/api/upload', uploadRoutes);
+} catch (error) {
+  console.error('❌ Error in uploadRoutes:', error.message);
+}
+
+console.log('🔍 Testing statsRoutes...');
+try {
+  const statsRoutes = require('./routes/stats');
+  console.log('✅ statsRoutes loaded successfully');
+  app.use('/api/stats', statsRoutes);
+} catch (error) {
+  console.error('❌ Error in statsRoutes:', error.message);
+}
+// Add this line to your server.js
 app.use('/api', materialRoutes);
-app.use('/api', uploadRoutes);
-// app.use('/api', statsRoutes);
-
-
-// Health check
-app.get('/api/health', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Server is running',
-    timestamp: new Date().toISOString(),
-    database: require('mongoose').connection.readyState === 1 ? 'connected' : 'disconnected'
-  });
+// Health check endpoint
+app.get('/api/health', async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    
+    res.json({
+      success: true,
+      message: 'Server is running with GridFS',
+      timestamp: new Date().toISOString(),
+      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'Health check failed',
+      error: error.message
+    });
+  }
 });
 
 // Error handling middleware
 app.use(errorHandler);
 
-// Graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('\n🛑 Shutting down gracefully...');
-  await require('mongoose').connection.close();
-  console.log('📊 Database connection closed.');
-  process.exit(0);
-});
-
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📡 API available at http://localhost:${PORT}/api`);
-  console.log(`📁 Uploads directory: ${uploadsDir}`);
+  console.log('🚀 Debug Server Started');
+  console.log(`📡 Server running on port ${PORT}`);
+  console.log(`🔍 Health check: http://localhost:${PORT}/api/health`);
 });
