@@ -146,11 +146,17 @@ const UploadPage = () => {
       formData.append(`pdf_${index}_customSubject`, pdfData.customSubject || '');
     });
 
-    // Make API call to backend
-    const response = await fetch('http://localhost:5000/api/upload', {
+    // ✅ FIXED: Correct API endpoint
+    const response = await fetch('http://localhost:5000/api/upload/upload', {
       method: 'POST',
       body: formData
     });
+
+    // Check if response is HTML (404 page) instead of JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      throw new Error(`Server returned ${response.status}: ${response.statusText}. Check if the API endpoint exists.`);
+    }
 
     const result = await response.json();
 
