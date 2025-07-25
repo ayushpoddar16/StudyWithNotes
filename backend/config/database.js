@@ -3,10 +3,7 @@ require('dotenv').config();
 
 const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
+    const conn = await mongoose.connect(process.env.MONGODB_URI);
 
     console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
     
@@ -17,6 +14,11 @@ const connectDB = async () => {
 
     mongoose.connection.on('disconnected', () => {
       console.log('📡 MongoDB disconnected');
+    });
+
+    // Optional: Handle reconnection
+    mongoose.connection.on('reconnected', () => {
+      console.log('🔄 MongoDB reconnected');
     });
 
     return conn;
