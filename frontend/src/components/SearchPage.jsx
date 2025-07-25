@@ -19,7 +19,7 @@ const SearchPage = () => {
   });
 
   // API Base URL - matches your backend
-  const API_BASE_URL = 'http://localhost:5000/api';
+  const API_BASE_URL = 'https://studywithnotes.onrender.com/api';
 
   // Updated fetchMaterials function with proper sort parameters
   const fetchMaterials = async (page = 1) => {
